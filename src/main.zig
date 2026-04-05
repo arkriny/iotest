@@ -40,10 +40,14 @@ pub fn main() !void {
 
             if (!std.mem.eql(u8, result.stdout, tc.output)) {
                 failed = true;
-                try stdout_w.print("=== Test #{d} failed ===\n", .{i});
-                try stdout_w.print("Input:\n{s}", .{tc.input});
-                try stdout_w.print("Expected:\n{s}", .{tc.output});
-                try stdout_w.print("Got:\n{s}", .{result.stdout});
+                const header = try std.fmt.allocPrint(arena, "=== Test #{d} failed ===", .{i});
+                try stdout_w.print("{s}\n", .{header});
+                try padPrint(stdout_w, "------- Input --------", header.len);
+                try stdout_w.print("\n{s}", .{tc.input});
+                try padPrint(stdout_w, "------ Expected ------", header.len);
+                try stdout_w.print("\n{s}", .{tc.output});
+                try padPrint(stdout_w, "-------- Got ---------", header.len);
+                try stdout_w.print("\n{s}", .{result.stdout});
                 try stdout_w.flush();
             }
         }
@@ -96,6 +100,12 @@ pub fn runCmd(
         .stderr = stderr.items,
         .term = try child.wait(),
     };
+}
+
+fn padPrint(w: *std.Io.Writer, comptime fmt: []const u8, len: usize) !void {
+    try w.print(fmt, .{});
+    const padding = len - fmt.len;
+    try w.splatByteAll('-', padding);
 }
 
 fn usage(err: []const u8) noreturn {
