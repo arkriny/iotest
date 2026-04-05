@@ -30,7 +30,7 @@ pub fn main() !void {
             fatal("failed to parse '{s}': {t}", .{ arg, err });
         };
 
-        for (testspec.testcases) |tc| {
+        for (testspec.testcases, 1..) |tc, i| {
             const result = runCmd(arena, argv, tc.input) catch |err| {
                 fatal("failed to run '{s}': {t}", .{ cmd, err });
             };
@@ -40,7 +40,7 @@ pub fn main() !void {
 
             if (!std.mem.eql(u8, result.stdout, tc.output)) {
                 failed = true;
-                try stdout_w.print("=== Test failed ===\n", .{});
+                try stdout_w.print("=== Test #{d} failed ===\n", .{i});
                 try stdout_w.print("Input:\n{s}", .{tc.input});
                 try stdout_w.print("Expected:\n{s}", .{tc.output});
                 try stdout_w.print("Got:\n{s}", .{result.stdout});
