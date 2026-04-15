@@ -1,12 +1,11 @@
 const std = @import("std");
 const Testspec = @import("Testspec.zig");
 
-pub fn main() !void {
-    var arena_instance: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer arena_instance.deinit();
-    const arena = arena_instance.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
+    var args_it = init.minimal.args.iterate();
 
-    var args_it = try std.process.argsWithAllocator(arena);
     _ = args_it.skip(); // program name
     const cmd = args_it.next() orelse {
         usage("missing command to run");
@@ -14,16 +13,16 @@ pub fn main() !void {
     const argv = try parseCmd(arena, cmd);
 
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout_w = &stdout_writer.interface;
 
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
 
     var seen_testfile = false;
     var failed = false;
     while (args_it.next()) |arg| {
         seen_testfile = true;
-        const contents = cwd.readFileAlloc(arena, arg, 1 << 31) catch |err| {
+        const contents = cwd.readFileAlloc(io, arg, arena, .unlimited) catch |err| {
             fatal("cannot read '{s}': {t}", .{ arg, err });
         };
         const testspec = Testspec.parse(arena, contents) catch |err| {
@@ -31,7 +30,7 @@ pub fn main() !void {
         };
 
         for (testspec.testcases, 1..) |tc, i| {
-            const result = runCmd(arena, argv, tc.input) catch |err| {
+            const result = runCmd(io, arena, argv, tc.input) catch |err| {
                 fatal("failed to run '{s}': {t}", .{ cmd, err });
             };
             if (result.stderr.len > 0) {
@@ -70,35 +69,62 @@ fn parseCmd(arena: std.mem.Allocator, cmd: []const u8) ![]const []const u8 {
 /// Spawns a child process, sends the provided input to stdin, waits for it,
 /// collecting stdout and stderr, and then returns.
 ///
-/// Based on `std.process.Child.run`.
+/// Based on `std.process.run`.
 pub fn runCmd(
+    io: std.Io,
     arena: std.mem.Allocator,
     argv: []const []const u8,
     input: []const u8,
-) !std.process.Child.RunResult {
-    var child: std.process.Child = .init(argv, arena);
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    var stdout: std.ArrayList(u8) = .empty;
-    var stderr: std.ArrayList(u8) = .empty;
-
-    try child.spawn();
-    errdefer {
-        _ = child.kill() catch {};
-    }
+) !std.process.RunResult {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    defer child.kill(io);
 
     var stdin = child.stdin.?;
-    try stdin.writeAll(input);
-    stdin.close();
+    try stdin.writeStreamingAll(io, input);
+    stdin.close(io);
     child.stdin = null;
 
-    try child.collectOutput(arena, &stdout, &stderr, 1 << 31);
+    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: std.Io.File.MultiReader = undefined;
+    multi_reader.init(arena, io, multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer multi_reader.deinit();
+
+    const stdout_reader = multi_reader.reader(0);
+    const stderr_reader = multi_reader.reader(1);
+
+    while (multi_reader.fill(64, .none)) |_| {
+        if (std.Io.Limit.unlimited.toInt()) |limit| {
+            if (stdout_reader.buffered().len > limit)
+                return error.StreamTooLong;
+        }
+        if (std.Io.Limit.unlimited.toInt()) |limit| {
+            if (stderr_reader.buffered().len > limit)
+                return error.StreamTooLong;
+        }
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => |e| return e,
+    }
+
+    try multi_reader.checkAnyError();
+
+    const term = try child.wait(io);
+
+    const stdout_slice = try multi_reader.toOwnedSlice(0);
+    errdefer arena.free(stdout_slice);
+
+    const stderr_slice = try multi_reader.toOwnedSlice(1);
+    errdefer arena.free(stderr_slice);
+
     return .{
-        .stdout = stdout.items,
-        .stderr = stderr.items,
-        .term = try child.wait(),
+        .stdout = stdout_slice,
+        .stderr = stderr_slice,
+        .term = term,
     };
 }
 
