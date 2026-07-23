@@ -1,12 +1,14 @@
 const std = @import("std");
 const Testspec = @import("Testspec.zig");
 
+var program_name: []const u8 = undefined;
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     var args_it = init.minimal.args.iterate();
 
-    _ = args_it.skip(); // program name
+    program_name = args_it.next().?;
     const cmd = args_it.next() orelse {
         usage("missing command to run");
     };
@@ -34,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
                 fatal("failed to run '{s}': {t}", .{ cmd, err });
             };
             if (result.stderr.len > 0) {
-                std.debug.print("iotest: unexpected '{s}' stderr output:\n{s}", .{ cmd, result.stderr });
+                std.debug.print("{s}: unexpected '{s}' stderr output:\n{s}", .{ program_name, cmd, result.stderr });
             }
 
             if (!std.mem.eql(u8, result.stdout, tc.output)) {
@@ -135,11 +137,12 @@ fn padPrint(w: *std.Io.Writer, comptime fmt: []const u8, len: usize) !void {
 }
 
 fn usage(err: []const u8) noreturn {
-    std.debug.print("iotest: {s}\nUsage: iotest COMMAND TESTFILE...\n", .{err});
+    std.debug.print("{s}: {s}\nusage: {0s} COMMAND TESTFILE...\n", .{ program_name, err });
     std.process.exit(2);
 }
 
 fn fatal(comptime format: []const u8, args: anytype) noreturn {
-    std.debug.print("iotest: " ++ format ++ "\n", args);
+    std.debug.print("{s}: ", .{program_name});
+    std.debug.print(format ++ "\n", args);
     std.process.exit(1);
 }
